@@ -1,0 +1,338 @@
+---
+title: "Project.Rmd"
+author: "Caggiano Paolo & Giardini Davide"
+date: "2023-06-23"
+output: pdf_document
+---
+
+Import the data:
+
+```{r, include=FALSE}
+library(nnet)
+library(MASS)
+library(ggplot2)
+```
+
+```{r}
+df <- read.csv("Dataset/ProjectData.csv")
+```
+
+
+
+# Preliminary Operation to the Explanatory Variables
+
+First of all, we are going to do some preliminary operation on the "instruction" variables. This is because the variable's levels are deeply unbalanced: class 7 ("No formal education") has only one observation, while class 6 ("Some primary school") has 25.
+```{r}
+table(df$instruction)
+```
+This is going to be a problem for the classification model. For this reason, we decide to aggregate classes 5,6,7 in one class, that is going to represent people with a primary instruction or lower.
+```{r}
+df$instruction[df$instruction == 6 | df$instruction == 7 ] <- 5
+table(df$instruction)
+```
+Now, we are going to change the labels of the classes into 1-4 with 1 being the lower level of instruction and 4 being the highest. We are doing this because the regression function we are going to utilize later does not accept variables with missing levels (in this case 2).
+```{r}
+df$instruction[df$instruction == 1] <- 2
+df$instruction <-  df$instruction - 1
+df$instruction <-  5- df$instruction
+table(df$instruction)
+```
+
+Now we are going to convert all the variables into ordered and unordered categorical variables.<br>
+Instruction, Household members and Knowledge Score have to be converted into ordered categorical variables:
+
+```{r}
+df$instruction <- ordered(df$instruction, levels = c(1:4))
+df$household_members <- ordered(df$household_members, levels = c(1:6))
+df$know_score <- ordered(df$know_score, levels = c(0:7))
+```
+
+<br> Employment status and area are instead converted to unordered categorical variables:
+
+```{r}
+df$employment_status <- factor(df$employment_status, levels = c(1,2,4,5,6,9,10))
+df$area <- factor(df$area, levels = c(1:5))
+```
+
+# Literacy Model
+
+With this first model we want to understand which are the socio-economic factors that help to explain financial literacy among people. In other words, we are going to build a model that tries to explain the "Knowledge Score" that we built in the preprocessing phase.<br>
+To do so, we are going to use a Proportional Odds Logistic Regression Model.
+
+```{r}
+modKnow <- polr(know_score ~ sex + area+ household_members + age + instruction + employment_status,
+              data = df, Hess=TRUE)
+step(modKnow)
+```
+
+The Akaike Information Criterion suggests that we should remove the variables related to area, employment status and household members. We therefore re-estimate the model:
+```{r}
+modKnow <- polr(formula = know_score ~ sex + age + instruction, data = df, 
+    Hess = TRUE)
+summary(modKnow)
+```
+Since the polr function does not automatically give us the p-value, we are going to compute them separately:
+```{r}
+summary_table <- coef(summary(modKnow))
+pval <- pnorm(abs(summary_table[, "t value"]),lower.tail = FALSE)* 2
+summary_table <- cbind(summary_table, "p value" = round(pval,5))
+summary_table
+```
+Since the regression is logistic, we have to compute the exponential transformation to fully interpret them:
+
+```{r}
+exp(coef(summary(modKnow)))
+```
+
+# Retirement
+
+With the next models, we are going to tackle questions related to retirement savings (QF8 and QF9).
+
+## QF8 - Who does not think to have a good retirement plan?
+
+```{r}
+table(df$qf8)
+```
+There are 139 individuals that have not provided an answer for the question, we are going to create a subset that does not include these observations:
+
+```{r}
+dfR <- df[!(df$qf8==-99),]
+dfR <- dfR[!(df$qf8==-97),]
+dfR$qf8 <- ordered(dfR$qf8, levels = c(6:1))
+```
+
+Once again, we are going to use the "polr" function to estimate the Proportional Odds Logistic Regression Model:
+```{r}
+modRet1 <- polr(qf8 ~ sex + area+ household_members + age + instruction + employment_status +
+                 know_score, data = dfR, Hess = TRUE)
+step(modRet1)
+```
+We re-estimate the model utilizing only the variables that have been selected through the AIC criterion:
+```{r}
+modRet1 <- polr(formula = qf8 ~ area + age + instruction + employment_status, 
+    data = dfR, Hess = TRUE)
+summary(modRet1)
+```
+We compute the p-values:
+```{r}
+summary_table <- coef(summary(modRet1))
+pval <- pnorm(abs(summary_table[, "t value"]),lower.tail = FALSE)* 2
+summary_table <- cbind(summary_table, "p value" = round(pval,5))
+summary_table
+```
+We compute the exponential transformation of the estimates for better interpretability:
+```{r}
+exp(coef(summary(modRet1)))
+```
+
+We are now going to estimate a regression only with knowledge score, in order to understand the association that this variable has with the answer qf8:
+
+```{r}
+modRet1 <- polr(qf8 ~ know_score, data = dfR, Hess = TRUE)
+summary(modRet1)
+```
+Once again, the p-values are computed here:
+```{r}
+summary_table <- coef(summary(modRet1))
+pval <- pnorm(abs(summary_table[, "t value"]),lower.tail = FALSE)* 2
+summary_table <- cbind(summary_table, "p value" = round(pval,5))
+summary_table
+```
+
+
+## QF9 - Who does utilize more secure tools for building their retirement fund?
+
+We classify answer a-f and i as a stable/secure retirement plan (1), while all the other answer are considered unsecure (0).
+We are interested in identifying those variables that are related to the choice of an unsecure retirement plan.
+
+```{r, include=FALSE}
+df <- read.csv("Dataset/ProjectData.csv")
+df$instruction <- ordered(df$instruction, levels = c(7:1))
+df$household_members <- ordered(df$household_members, levels = c(1:6))
+df$know_score <- ordered(df$know_score, levels = c(0:7))
+df$employment_status <- factor(df$employment_status, levels = c(1,2,4,5,6,9,10))
+df$area <- factor(df$area, levels = c(1:5))
+```
+
+
+```{r}
+# We create a new subset without the observation that have not given an answer for this question
+dfR2 <- df[!(df$qf9_99==1),]
+```
+
+```{r}
+# We create a new column that contain the sum of the columns related to secure retirement plans
+dfR2$sum <- dfR2$qf9_1 + dfR2$qf9_2 + dfR2$qf9_3 +
+  dfR2$qf9_4 + dfR2$qf9_5 + dfR2$qf9_6 + dfR2$qf9_9
+# We transform the observation that have any value different from 0 in this new column to 1.
+# In this way any observation that have at least one secure tool for building their
+# retirement plan will be classified as 1.
+# While all the other observation will remain equal to zero.
+dfR2$sum[dfR2$sum != 0] <- 1
+```
+
+```{r}
+dfR2$sum <- factor(dfR2$sum, levels = c(0,1))
+```
+
+
+We now estimate the model and apply the Akaike Information Criterion:
+```{r}
+modRet2 <- glm(sum ~ sex + area + household_members + age + instruction +
+                 employment_status + know_score, data = dfR2, family = "binomial")
+step(modRet2)
+```
+
+Now we re-estimate the model with the variables identified by the AIC:
+```{r}
+modRet2 <- glm(sum ~ sex + area + household_members + age + instruction
+               + employment_status, data = dfR2, family = "binomial")
+summary(modRet2)
+```
+
+
+We are now going to build a stacked bar-plot to further investigate the relationship between employment status and the answer to QF9:
+```{r}
+dfR2$employment_status <- as.integer(dfR2$employment_status)
+dfR2$employment_status[dfR2$employment_status == 2] <- 1
+dfR2$employment_status[dfR2$employment_status != 1] <- 0
+library(ggplot2)
+```
+```{r}
+# Stacked
+ggplot(dfR2, aes(fill=factor(sum, levels=c(0,1)), y = after_stat(count), x=factor(employment_status, levels = c(0,1)))) + 
+    geom_bar(position="stack", stat="count") +
+    xlab("Employment Status") +
+#    legend("topleft", legend = c("Unsecure tools for retirement", "Secure tools for retirement"))
+    scale_fill_discrete(labels=c('Risky', 'Safe')) +
+    guides(fill=guide_legend(title="Tools for Retirement:")) +
+    scale_x_discrete(labels= c("Unemployed", "Employed"))
+```
+
+
+# Personal Finance
+
+In this section we are going to tackle questions related to Personal Finance (savings): QF2, QF3, QF4, QF13
+
+## QF3 - Who uses non-smart ways to save money?
+
+We classify answer b, d, e as a secure way of saving money (1), while all the other answer are considered unsecure (0). We are interested in
+identifying those variables that are related to the choice of an unsecure plan for personal savings.
+
+```{r}
+# We remove the observation that have not given an answer for this question (155)
+dfPF2 <- df[!(df$qf3_99==1),]
+```
+
+```{r}
+# The method is equal to the one in QF9
+dfPF2$sum <- dfPF2$qf3_3 + dfPF2$qf3_6 + dfPF2$qf3_7
+dfPF2$sum[dfPF2$sum != 0] <- 1
+```
+
+```{r}
+dfPF2$sum <- factor(dfPF2$sum, levels = c(0,1))
+```
+
+```{r}
+modPF2 <- glm(sum ~ sex + area + household_members + age + instruction +
+                employment_status + know_score, data = dfPF2, family = "binomial")
+step(modPF2)
+```
+
+```{r}
+modPF2 <- glm(formula = sum ~ area + household_members + instruction +
+                employment_status + know_score, family = "binomial", data = dfPF2)
+summary(modPF2)
+```
+
+## QF4 - Who is not capable of sustaining an imporvise expense?
+
+```{r}
+# We remove the observation that have not given an answer for this question,
+# and those who have not a personal income (78 + 255)
+dfPF3 <- df[!(df$qf4 == -99),]
+dfPF3 <- dfPF3[!(df$qf4 == -98),]
+```
+
+```{r}
+# We transform all the observation that have not answered with 1 ("Yes") as 0 (negative category)
+# This is because "not knowing" is considered a negative response to the question
+dfPF3$qf4[dfPF3$qf4 != 1] <- 0
+```
+
+```{r}
+dfPF3$qf4 <- factor(dfPF3$qf4, levels = c(0,1))
+```
+
+```{r}
+modPF3 <- glm(qf4 ~ sex + area + household_members + age + instruction +
+                employment_status + know_score, data = dfPF3, family = "binomial")
+step(modPF3)
+```
+
+```{r}
+modPF3 <- glm(qf4 ~ age + instruction + employment_status + know_score, 
+              family = "binomial", data = dfPF3)
+summary(modPF3)
+```
+
+We plot the distribution of knowledge score between people that responded positively and negatively to answer QF4, in order to further investigate the relationship between this two variables:
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+dfPF3 <- dfPF3 %>% drop_na(know_score)
+dfPF3_0 <- dfPF3[dfPF3['qf4'] == 0,]
+dfPF3_1 <- dfPF3[dfPF3['qf4'] == 1,]
+```
+
+```{r}
+require(gridExtra)
+plot1 <- ggplot(dfPF3_0, aes(x=know_score)) +
+    geom_histogram(binwidth=.5, colour="black", fill="light green", stat="count") +
+    ggtitle("Negative Answer (0)")  +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    ylim(c(0,200))
+plot2 <- ggplot(dfPF3_1, aes(x=know_score)) +
+    geom_histogram(binwidth=.5, colour="black", fill="light blue", stat="count") +
+    ggtitle("Positive Answer (1)") +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    ylim(c(0,200))
+grid.arrange(plot1, plot2, ncol=2)
+```
+
+
+
+
+## QF13 - Who does not have an emergency fund?
+
+This question evaluates if the person have an "Emergency Fund". According to the popular opinion, an emergency fund should cover at least 3-6 months of expenses. For this reason, answer d and e are considered positive (1), while all the other are considered negative (0).
+
+```{r}
+# We remove the observation that have not given an answer for this question
+dfPF4 <- df[!(df$qf13 == -99),]
+```
+
+```{r}
+dfPF4$qf13[dfPF4$qf13 == 1 | dfPF4$qf13 == 2 | dfPF4$qf13 == 3 | dfPF4$qf13 == -97] <- 0
+dfPF4$qf13[dfPF4$qf13 != 0] <- 1
+```
+
+```{r}
+dfPF4$qf13 <- factor(dfPF4$qf13, levels = c(0,1))
+```
+
+```{r}
+modPF4 <- glm(qf13 ~ sex + area + household_members + age + instruction
+              + employment_status + know_score, data = dfPF4, family = "binomial")
+step(modPF4)
+```
+
+```{r}
+modPF4 <- glm(formula = qf13 ~ area + age + employment_status + know_score, 
+    family = "binomial", data = dfPF4)
+summary(modPF4)
+```
+
+
+
